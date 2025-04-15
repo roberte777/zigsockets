@@ -10,6 +10,7 @@ pub const Client = struct {
         return Client{
             .allocator = allocator,
             .connected = false,
+            .stream = null,
             .host = try allocator.dupe(u8, host),
             .port = port,
             .path = try allocator.dupe(u8, path),
