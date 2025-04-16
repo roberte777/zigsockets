@@ -83,8 +83,9 @@ pub const Client = struct {
             if (header_line.len <= 1) break;
 
             // Check for Sec-WebSocket-Accept header
-            if (std.mem.indexOf(u8, header_line, "Sec-WebSocket-Accept:")) |idx| {
-                const value_start = idx + "Sec-WebSocket-Accept:".len;
+            const header_name = "sec-websocket-accept:";
+            if (std.ascii.indexOfIgnoreCase(header_line, header_name)) |idx| {
+                const value_start = idx + header_name.len;
                 const accept_value = std.mem.trim(u8, header_line[value_start..], " \r\n");
 
                 const expected_accept = try computeAcceptKey(self.allocator, client_key);
