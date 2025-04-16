@@ -1,3 +1,6 @@
+// TODO: Modify to try and more closely match the standard tcp connection.
+// This means expose a function to create a WebsocketStream, and have similar
+// methods as the TCP Stream does.
 pub const Client = struct {
     allocator: Allocator,
     stream: ?net.Stream,
