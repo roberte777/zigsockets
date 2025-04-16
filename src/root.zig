@@ -38,7 +38,7 @@ pub const Client = struct {
 
         // Generate the WebSocket key (16 random bytes, base64 encoded)
         var key_bytes: [16]u8 = undefined;
-        try std.crypto.random.bytes(&key_bytes);
+        std.crypto.random.bytes(&key_bytes);
         var key_encoded: [base64.standard.Encoder.calcSize(16)]u8 = undefined;
         const key = base64.standard.Encoder.encode(&key_encoded, &key_bytes);
 
