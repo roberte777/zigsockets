@@ -3,7 +3,7 @@
 // methods as the TCP Stream does.
 pub const Client = struct {
     allocator: Allocator,
-    stream: ?net.Stream,
+    websocketStream: ?protocol.WebSocketStream,
     connected: bool,
     host: []const u8,
     port: u16,
@@ -13,7 +13,7 @@ pub const Client = struct {
         return Client{
             .allocator = allocator,
             .connected = false,
-            .stream = null,
+            .websocketStream = null,
             .host = try allocator.dupe(u8, host),
             .port = port,
             .path = try allocator.dupe(u8, path),
@@ -21,9 +21,9 @@ pub const Client = struct {
     }
     // Clean up resources
     pub fn deinit(self: *Client) void {
-        if (self.stream) |stream| {
-            stream.close();
-            self.stream = null;
+        if (self.websocketStream) |stream| {
+            stream.close(0, "Done") catch {};
+            self.websocketStream = null;
         }
         self.allocator.free(self.host);
         self.allocator.free(self.path);
@@ -34,7 +34,7 @@ pub const Client = struct {
         if (self.connected) return;
 
         const address = try net.Address.parseIp(self.host, self.port);
-        self.stream = try net.tcpConnectToAddress(address);
+        const stream = try net.tcpConnectToAddress(address);
 
         // Generate the WebSocket key (16 random bytes, base64 encoded)
         var key_bytes: [16]u8 = undefined;
@@ -56,17 +56,18 @@ pub const Client = struct {
         });
         defer self.allocator.free(request);
 
-        try self.stream.?.writer().writeAll(request);
+        try stream.writer().writeAll(request);
 
-        try self.handleHandshakeResponse(key);
+        try self.handleHandshakeResponse(&stream, key);
 
         self.connected = true;
+        self.websocketStream = try protocol.WebSocketStream.init(self.allocator, stream);
     }
 
     // Process the handshake response from the server
-    fn handleHandshakeResponse(self: *Client, client_key: []const u8) !void {
+    fn handleHandshakeResponse(self: *Client, stream: *const net.Stream, client_key: []const u8) !void {
         var buffer: [1024]u8 = undefined;
-        var stream_reader = self.stream.?.reader();
+        var stream_reader = stream.reader();
 
         // Read HTTP status line
         const status_line = try stream_reader.readUntilDelimiterOrEof(&buffer, '\n') orelse return error.ConnectionClosed;
@@ -120,6 +121,133 @@ pub const Client = struct {
 
         return allocator.dupe(u8, result);
     }
+    // Send a text message
+    pub fn sendText(self: *Client, text: []const u8) !void {
+        if (!self.connected or self.websocketStream == null) return error.NotConnected;
+        try self.websocketStream.?.sendText(text);
+    }
+
+    // Send a binary message
+    pub fn sendBinary(self: *Client, data: []const u8) !void {
+        if (!self.connected or self.websocketStream == null) return error.NotConnected;
+        try self.websocketStream.?.sendBinary(data);
+    }
+
+    // Read a message (blocking)
+    pub fn readMessage(self: *Client) !protocol.Message {
+        if (!self.connected or self.websocketStream == null) return error.NotConnected;
+        return self.websocketStream.?.readMessage();
+    }
+    // Check if client is connected
+    pub fn isConnected(self: *const Client) bool {
+        return self.connected and self.websocketStream != null;
+    }
+    // Attempt to reconnect
+    pub fn reconnect(self: *Client) !void {
+        if (self.websocketStream) |*stream| {
+            stream.deinit();
+            self.websocketStream = null;
+        }
+        self.connected = false;
+        try self.connect();
+    }
+
+    // Close the connection with optional status code and reason
+    pub fn close(self: *Client, code: u16, reason: ?[]const u8) !void {
+        if (!self.connected or self.websocketStream == null) return;
+        try self.websocketStream.?.close(code, reason);
+        self.connected = false;
+    }
+
+    // Send ping with optional data
+    pub fn ping(self: *Client, data: ?[]const u8) !void {
+        if (!self.connected or self.websocketStream == null) return error.NotConnected;
+        try self.websocketStream.?.ping(data);
+    }
+
+    // Send pong with optional data
+    pub fn pong(self: *Client, data: ?[]const u8) !void {
+        if (!self.connected or self.websocketStream == null) return error.NotConnected;
+        try self.websocketStream.?.pong(data);
+    }
+    // Start listening for messages in a separate thread and call the provided callback
+    pub fn startMessageLoop(self: *Client, callback: *const fn (protocol.Message) void) !Thread {
+        if (!self.connected or self.websocketStream == null) return error.NotConnected;
+
+        const MessageLoopContext = struct {
+            client: *Client,
+            callback: *const fn (protocol.Message) void,
+        };
+
+        const context = try self.allocator.create(MessageLoopContext);
+        context.* = .{
+            .client = self,
+            .callback = callback,
+        };
+
+        return try Thread.spawn(.{}, struct {
+            fn messageLoop(ctx: *MessageLoopContext) !void {
+                defer ctx.client.allocator.destroy(ctx);
+
+                while (ctx.client.isConnected()) {
+                    const message = ctx.client.readMessage() catch |err| {
+                        if (err == error.ConnectionClosed or err == error.EndOfStream) {
+                            break;
+                        } else {
+                            ctx.client.reconnect() catch break;
+                            continue;
+                        }
+                    };
+                    defer ctx.client.allocator.free(message.data);
+                    //
+                    //     switch (message.type) {
+                    //         .close => {
+                    //             ctx.client.connected = false;
+                    //             break;
+                    //         },
+                    //         .ping => {
+                    //             ctx.client.pong(message.data) catch {};
+                    //             ctx.callback(message);
+                    //         },
+                    //         else => ctx.callback(message),
+                    //     }
+                }
+            }
+        }.messageLoop, .{context});
+    }
+
+    // Set a ping interval to keep the connection alive
+    pub fn startPingInterval(self: *Client, interval_ms: u64) !Thread {
+        if (!self.connected or self.websocketStream == null) return error.NotConnected;
+
+        const PingContext = struct {
+            client: *Client,
+            interval_ms: u64,
+        };
+
+        const context = try self.allocator.create(PingContext);
+        context.* = .{
+            .client = self,
+            .interval_ms = interval_ms,
+        };
+
+        return try Thread.spawn(.{}, struct {
+            fn pingLoop(ctx: *PingContext) !void {
+                defer ctx.client.allocator.destroy(ctx);
+
+                while (ctx.client.isConnected()) {
+                    ctx.client.ping(null) catch |err| {
+                        if (err == error.ConnectionClosed or err == error.EndOfStream) {
+                            break;
+                        }
+                        ctx.client.reconnect() catch break;
+                    };
+
+                    std.time.sleep(ctx.interval_ms * std.time.ns_per_ms);
+                }
+            }
+        }.pingLoop, .{context});
+    }
 };
 
 const std = @import("std");
@@ -129,3 +257,5 @@ const net = std.net;
 const base64 = std.base64;
 const crypto = std.crypto;
 const sha1 = crypto.hash.Sha1;
+pub const protocol = @import("protocol.zig");
+const Thread = std.Thread;
