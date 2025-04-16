@@ -1,5 +1,14 @@
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) {
+            std.debug.print("MEMORY LEAK DETECTED!\n", .{});
+        } else {
+            std.debug.print("No memory leaks detected.\n", .{});
+        }
+    }
+
     const allocator = gpa.allocator();
     var wsClient = try websocket.Client.init(allocator, "127.0.0.1", 8080, "/");
     defer wsClient.deinit();
