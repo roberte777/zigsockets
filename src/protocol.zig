@@ -139,8 +139,8 @@ const FrameCodec = struct {
                     }
 
                     var newBuffer = std.ArrayList(u8).init(self.allocator);
-                    errdefer self.allocator.free(newBuffer);
                     try newBuffer.appendSlice(self.inBuffer.items[totalFrameSize..]);
+                    errdefer self.allocator.free(newBuffer);
 
                     const oldBuffer = self.inBuffer;
                     self.inBuffer = newBuffer;
@@ -286,7 +286,16 @@ pub const WebSocketContext = struct {
     }
 
     // Helper function to write a frame
-    fn writeFrame(self: *const WebSocketContext, stream: Stream, frame: struct { isFinal: bool, opcode: u4, payload: []const u8 }) !void {
+    fn writeFrame(
+        self: *const WebSocketContext,
+        stream: Stream,
+        frame: struct {
+            isFinal: bool,
+            opcode: u4,
+            payload: []const u8,
+            mask: bool = true,
+        },
+    ) !void {
         // Calculate header size
         var headerSize: usize = 2; // Basic header is 2 bytes
 
@@ -297,7 +306,16 @@ pub const WebSocketContext = struct {
             headerSize += 8;
         }
 
-        // Create the header buffer
+        // Add 4 bytes for mask if masking is enabled
+        var maskBytes: ?[4]u8 = null;
+        if (frame.mask) {
+            headerSize += 4;
+            var rnd = std.crypto.random;
+            var mask: [4]u8 = undefined;
+            rnd.bytes(&mask);
+            maskBytes = mask;
+        }
+
         var header = try self.allocator.alloc(u8, headerSize);
         defer self.allocator.free(header);
 
@@ -305,15 +323,21 @@ pub const WebSocketContext = struct {
         header[0] = if (frame.isFinal) 0x80 else 0;
         header[0] |= frame.opcode;
 
+        // Set second byte with mask bit if needed
+        var secondByte: u8 = 0;
+        if (frame.mask) {
+            secondByte |= 0x80;
+        }
+
         // Set length bytes
         if (frame.payload.len <= 125) {
-            header[1] = @intCast(frame.payload.len);
+            header[1] = secondByte | @as(u8, frame.payload.len);
         } else if (frame.payload.len <= 65535) {
-            header[1] = 126;
+            header[1] = secondByte | 126;
             header[2] = @intCast((frame.payload.len >> 8) & 0xFF);
             header[3] = @intCast(frame.payload.len & 0xFF);
         } else {
-            header[1] = 127;
+            header[1] = secondByte | 127;
             // taken from (https://github.com/karlseguin/websocket.zig)
             if (comptime builtin.target.ptrBitWidth() >= 64) {
                 header[2] = @intCast((frame.payload.len >> 56) & 0xFF);
@@ -332,8 +356,34 @@ pub const WebSocketContext = struct {
             header[9] = @intCast(frame.payload.len & 0xFF);
         }
 
+        // Add mask bytes to header if masking
+        var maskOffset: usize = 0;
+        if (frame.mask) {
+            if (frame.payload.len <= 125) {
+                maskOffset = 2;
+            } else if (frame.payload.len <= 65535) {
+                maskOffset = 4;
+            } else {
+                maskOffset = 10;
+            }
+
+            header[maskOffset] = maskBytes.?[0];
+            header[maskOffset + 1] = maskBytes.?[1];
+            header[maskOffset + 2] = maskBytes.?[2];
+            header[maskOffset + 3] = maskBytes.?[3];
+        }
         _ = try stream.write(header);
-        _ = try stream.write(frame.payload);
+
+        if (frame.mask and maskBytes != null) {
+            var maskedPayload = try self.allocator.alloc(u8, frame.payload.len);
+            defer self.allocator.free(maskedPayload);
+            for (frame.payload, 0..) |byte, i| {
+                maskedPayload[i] = byte ^ maskBytes.?[i % 4];
+            }
+            _ = try stream.write(maskedPayload);
+        } else {
+            _ = try stream.write(frame.payload);
+        }
     }
 };
 
