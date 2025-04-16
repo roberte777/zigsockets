@@ -13,37 +13,39 @@ pub fn main() !void {
     }
 
     // Define a message handler
-    const MessageHandler = struct {
-        fn handleMessage(message: websocket.protocol.Message) void {
-            switch (message.type) {
-                .text => {
-                    const text = message.data;
-                    std.debug.print("Received text: {s}\n", .{text});
-                },
-                .binary => {
-                    std.debug.print("Received binary message ({d} bytes)\n", .{message.data.len});
-                },
-                .ping => {
-                    std.debug.print("Received ping\n", .{});
-                },
-                .pong => {
-                    std.debug.print("Received pong\n", .{});
-                },
-                .close => {
-                    std.debug.print("Received close frame\n", .{});
-                },
-            }
-        }
-    };
+    // const MessageHandler = struct {
+    //     fn handleMessage(message: websocket.protocol.Message) void {
+    //         switch (message.type) {
+    //             .text => {
+    //                 const text = message.data;
+    //                 std.debug.print("Received text: {s}\n", .{text});
+    //             },
+    //             .binary => {
+    //                 std.debug.print("Received binary message ({d} bytes)\n", .{message.data.len});
+    //             },
+    //             .ping => {
+    //                 std.debug.print("Received ping\n", .{});
+    //             },
+    //             .pong => {
+    //                 std.debug.print("Received pong\n", .{});
+    //             },
+    //             .close => {
+    //                 std.debug.print("Received close frame\n", .{});
+    //             },
+    //         }
+    //     }
+    // };
 
-    // Start listening for messages in a separate thread
-    var messageThread = try wsClient.startMessageLoop(MessageHandler.handleMessage);
-
-    // Start automatic ping interval
-    var pingThread = try wsClient.startPingInterval(30000); // 30 seconds
+    // // Start listening for messages in a separate thread
+    // var messageThread = try wsClient.startMessageLoop(MessageHandler.handleMessage);
+    //
+    // // Start automatic ping interval
+    // var pingThread = try wsClient.startPingInterval(30000); // 30 seconds
 
     // Send a text message
     try wsClient.sendText("Hello, WebSocket server!");
+    const message = try wsClient.readMessage();
+    std.debug.print("message: {s}\n", .{message.data});
 
     // Wait for user input to quit
     std.debug.print("Press Enter to quit...\n", .{});
@@ -54,8 +56,8 @@ pub fn main() !void {
     try wsClient.close(1000, "Normal closure");
 
     // Wait for the threads to finish
-    messageThread.join();
-    pingThread.join();
+    // messageThread.join();
+    // pingThread.join();
 }
 
 const std = @import("std");

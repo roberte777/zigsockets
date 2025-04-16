@@ -199,18 +199,18 @@ pub const Client = struct {
                         }
                     };
                     defer ctx.client.allocator.free(message.data);
-                    //
-                    //     switch (message.type) {
-                    //         .close => {
-                    //             ctx.client.connected = false;
-                    //             break;
-                    //         },
-                    //         .ping => {
-                    //             ctx.client.pong(message.data) catch {};
-                    //             ctx.callback(message);
-                    //         },
-                    //         else => ctx.callback(message),
-                    //     }
+
+                    switch (message.type) {
+                        .close => {
+                            ctx.client.connected = false;
+                            break;
+                        },
+                        .ping => {
+                            ctx.client.pong(message.data) catch {};
+                            ctx.callback(message);
+                        },
+                        else => ctx.callback(message),
+                    }
                 }
             }
         }.messageLoop, .{context});
