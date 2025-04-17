@@ -1,6 +1,11 @@
 pub const Message = struct {
     type: Type,
     data: []u8,
+    allocator: Allocator,
+
+    pub fn deinit(self: *const Message) void {
+        self.allocator.free(self.data);
+    }
 
     pub const Type = enum {
         text,
@@ -206,18 +211,21 @@ pub const WebSocketContext = struct {
                     return Message{
                         .type = .close,
                         .data = try self.allocator.dupe(u8, frame.payload),
+                        .allocator = self.allocator,
                     };
                 },
                 0x9 => { // Ping frame
                     return Message{
                         .type = .ping,
                         .data = try self.allocator.dupe(u8, frame.payload),
+                        .allocator = self.allocator,
                     };
                 },
                 0xA => { // Pong frame
                     return Message{
                         .type = .pong,
                         .data = try self.allocator.dupe(u8, frame.payload),
+                        .allocator = self.allocator,
                     };
                 },
                 0x0 => { // Continuation frame
@@ -228,6 +236,7 @@ pub const WebSocketContext = struct {
                             const complete_message = Message{
                                 .type = frag.type,
                                 .data = try frag.data.toOwnedSlice(),
+                                .allocator = self.allocator,
                             };
 
                             self.fragmented_message = null;
@@ -244,6 +253,7 @@ pub const WebSocketContext = struct {
                         return Message{
                             .type = message_type,
                             .data = try self.allocator.dupe(u8, frame.payload),
+                            .allocator = self.allocator,
                         };
                     } else {
                         // Start of a fragmented message
@@ -330,8 +340,9 @@ pub const WebSocketContext = struct {
         }
 
         // Set length bytes
+        const payloadLength: u8 = @intCast(frame.payload.len);
         if (frame.payload.len <= 125) {
-            header[1] = secondByte | @as(u8, frame.payload.len);
+            header[1] = secondByte | payloadLength;
         } else if (frame.payload.len <= 65535) {
             header[1] = secondByte | 126;
             header[2] = @intCast((frame.payload.len >> 8) & 0xFF);
@@ -416,22 +427,16 @@ pub const WebSocketStream = struct {
 
     // Convenience method to send a text message
     pub fn sendText(self: *WebSocketStream, text: []const u8) !void {
-        const message = Message{
-            .type = .text,
-            .data = try self.allocator.dupe(u8, text),
-        };
-        defer self.allocator.free(message.data);
+        const message = Message{ .type = .text, .data = try self.allocator.dupe(u8, text), .allocator = self.allocator };
+        defer message.deinit();
 
         try self.writeMessage(message);
     }
 
     // Convenience method to send a binary message
     pub fn sendBinary(self: *WebSocketStream, data: []const u8) !void {
-        const message = Message{
-            .type = .binary,
-            .data = try self.allocator.dupe(u8, data),
-        };
-        defer self.allocator.free(message.data);
+        const message = Message{ .type = .binary, .data = try self.allocator.dupe(u8, data), .allocator = self.allocator };
+        defer message.deinit();
 
         try self.writeMessage(message);
     }
@@ -444,7 +449,6 @@ pub const WebSocketStream = struct {
         }
 
         var payload = try self.allocator.alloc(u8, payload_len);
-        defer self.allocator.free(payload);
 
         payload[0] = @truncate((code >> 8) & 0xFF);
         payload[1] = @truncate(code & 0xFF);
@@ -454,10 +458,8 @@ pub const WebSocketStream = struct {
             @memcpy(payload[2..], r);
         }
 
-        const message = Message{
-            .type = .close,
-            .data = payload,
-        };
+        const message = Message{ .type = .close, .data = payload, .allocator = self.allocator };
+        defer message.deinit();
 
         try self.writeMessage(message);
     }
@@ -470,11 +472,9 @@ pub const WebSocketStream = struct {
                 try self.allocator.dupe(u8, d)
             else
                 &[_]u8{},
+            .allocator = self.allocator,
         };
-
-        if (data != null) {
-            defer self.allocator.free(message.data);
-        }
+        defer message.deinit();
 
         try self.writeMessage(message);
     }
@@ -487,11 +487,10 @@ pub const WebSocketStream = struct {
                 try self.allocator.dupe(u8, d)
             else
                 &[_]u8{},
+            .allocator = self.allocator,
         };
 
-        if (data != null) {
-            defer self.allocator.free(message.data);
-        }
+        defer message.deinit();
 
         try self.writeMessage(message);
     }
