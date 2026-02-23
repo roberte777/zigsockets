@@ -198,7 +198,7 @@ pub const Client = struct {
                             continue;
                         }
                     };
-                    defer ctx.client.allocator.free(message.data);
+                    defer message.deinit();
 
                     switch (message.type) {
                         .close => {
